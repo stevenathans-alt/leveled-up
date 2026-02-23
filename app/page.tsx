@@ -474,5 +474,7 @@ const styles: Record<string, React.CSSProperties> = {
   playTimer: { fontSize: 18, marginTop: 6 },
   timer: { fontSize: 28, fontWeight: 900 },
 };git remote add origin https://github.com/stevenathans-alt/leveled-up.git
-git branch -M main
-git push -u origin main
+Pwd
+cd ~/leveled-up
+
+
