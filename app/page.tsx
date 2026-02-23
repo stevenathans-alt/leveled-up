@@ -1,190 +1,98 @@
 "use client";
 
 import React, { useEffect, useMemo, useState } from "react";
-import { create } from "zustand";
+
+type Mode = "home" | "parent" | "quiz" | "unlock";
 
 type Settings = {
-  passingPct: number;      // e.g. 80
-  questionsPerSession: number; // e.g. 10
-  rewardMinutes: number;   // e.g. 20
-  dailyMaxMinutes: number; // e.g. 60
-  skill: "multiplication";
+  passingPct: number;
+  questionsPerSession: number;
+  rewardMinutes: number;
 };
 
-type Store = {
-  settings: Settings;
-  earnedMinutesToday: number;
-  lastEarnedAtISO: string | null;
+type Q = { a: number; b: number; answer: number };
 
-  setSettings: (patch: Partial<Settings>) => void;
-  addEarnedMinutes: (minutes: number) => void;
-  resetDailyIfNeeded: () => void;
-};
-
-const DEFAULT_SETTINGS: Settings = {
-  passingPct: 80,
-  questionsPerSession: 10,
-  rewardMinutes: 20,
-  dailyMaxMinutes: 60,
-  skill: "multiplication",
-};
-
-function yyyyMmDd(date: Date) {
-  const y = date.getFullYear();
-  const m = String(date.getMonth() + 1).padStart(2, "0");
-  const d = String(date.getDate()).padStart(2, "0");
-  return `${y}-${m}-${d}`;
-}
-
-const useAppStore = create<Store>((set, get) => ({
-  settings: DEFAULT_SETTINGS,
-  earnedMinutesToday: 0,
-  lastEarnedAtISO: null,
-
-  setSettings: (patch) =>
-    set((s) => ({ settings: { ...s.settings, ...patch } })),
-
-  addEarnedMinutes: (minutes) =>
-    set((s) => ({
-      earnedMinutesToday: Math.min(
-        s.settings.dailyMaxMinutes,
-        s.earnedMinutesToday + minutes
-      ),
-      lastEarnedAtISO: new Date().toISOString(),
-    })),
-
-  resetDailyIfNeeded: () => {
-    const iso = get().lastEarnedAtISO;
-    if (!iso) return;
-    const last = new Date(iso);
-    const now = new Date();
-    if (yyyyMmDd(last) !== yyyyMmDd(now)) {
-      set({ earnedMinutesToday: 0 });
-    }
-  },
-}));
-
-type Question = {
-  a: number;
-  b: number;
-  answer: number;
-};
-
-function generateMultiplicationQuestions(count: number): Question[] {
-  // Simple MVP: 0–12 times tables, weighted toward 6–12 a bit.
-  const questions: Question[] = [];
-  for (let i = 0; i < count; i++) {
-    const a = Math.random() < 0.65 ? randInt(6, 12) : randInt(0, 12);
-    const b = Math.random() < 0.65 ? randInt(6, 12) : randInt(0, 12);
-    questions.push({ a, b, answer: a * b });
-  }
-  return questions;
-}
+const DEFAULTS: Settings = { passingPct: 80, questionsPerSession: 10, rewardMinutes: 10 };
 
 function randInt(min: number, max: number) {
   return Math.floor(Math.random() * (max - min + 1)) + min;
 }
-
-type Mode = "home" | "parent" | "kid" | "play";
+function makeQuestions(n: number): Q[] {
+  return Array.from({ length: n }).map(() => {
+    const a = Math.random() < 0.65 ? randInt(6, 12) : randInt(0, 12);
+    const b = Math.random() < 0.65 ? randInt(6, 12) : randInt(0, 12);
+    return { a, b, answer: a * b };
+  });
+}
 
 export default function Page() {
-  const { settings, earnedMinutesToday, setSettings, addEarnedMinutes, resetDailyIfNeeded } =
-    useAppStore();
-
   const [mode, setMode] = useState<Mode>("home");
+  const [settings, setSettings] = useState<Settings>(DEFAULTS);
 
-  // Quiz state
-  const [questions, setQuestions] = useState<Question[]>([]);
-  const [idx, setIdx] = useState(0);
-  const [input, setInput] = useState("");
-  const [correctCount, setCorrectCount] = useState(0);
-  const [done, setDone] = useState(false);
-  const [showResult, setShowResult] = useState<string | null>(null);
+  // quiz state
+  const [qs, setQs] = useState<Q[]>([]);
+  const [i, setI] = useState(0);
+  const [val, setVal] = useState("");
+  const [correct, setCorrect] = useState(0);
+  const [feedback, setFeedback] = useState<string | null>(null);
 
-  // Play timer
-  const [secondsLeft, setSecondsLeft] = useState<number>(0);
+  // unlock timer (in-app MVP)
+  const [secondsLeft, setSecondsLeft] = useState(0);
 
-  useEffect(() => {
-    resetDailyIfNeeded();
-  }, [resetDailyIfNeeded]);
+  const progress = useMemo(() => {
+    const total = Math.max(1, settings.questionsPerSession);
+    return Math.round(((i + 1) / total) * 100);
+  }, [i, settings.questionsPerSession]);
 
   const scorePct = useMemo(() => {
-    if (!done) return 0;
-    return Math.round((correctCount / settings.questionsPerSession) * 100);
-  }, [done, correctCount, settings.questionsPerSession]);
+    const total = Math.max(1, settings.questionsPerSession);
+    return Math.round((correct / total) * 100);
+  }, [correct, settings.questionsPerSession]);
 
-  const canEarnMoreToday = earnedMinutesToday < settings.dailyMaxMinutes;
-
-  function startKidSession() {
-    setShowResult(null);
-    setDone(false);
-    setCorrectCount(0);
-    setIdx(0);
-    setInput("");
-    const qs =
-      settings.skill === "multiplication"
-        ? generateMultiplicationQuestions(settings.questionsPerSession)
-        : [];
-    setQuestions(qs);
-    setMode("kid");
+  function startQuiz() {
+    setFeedback(null);
+    setCorrect(0);
+    setI(0);
+    setVal("");
+    setQs(makeQuestions(settings.questionsPerSession));
+    setMode("quiz");
   }
 
-  function submitAnswer() {
-    const q = questions[idx];
-    const parsed = Number(input.trim());
-    const isCorrect = Number.isFinite(parsed) && parsed === q.answer;
-    if (isCorrect) setCorrectCount((c) => c + 1);
+  function submit() {
+    const cur = qs[i];
+    const ans = Number(val.trim());
+    const isCorrect = Number.isFinite(ans) && ans === cur.answer;
 
-    // move forward
-    const next = idx + 1;
-    setInput("");
-    if (next >= questions.length) {
-      setDone(true);
-      const pct = Math.round(((isCorrect ? correctCount + 1 : correctCount) / settings.questionsPerSession) * 100);
-      const passed = pct >= settings.passingPct;
+    const nextCorrect = correct + (isCorrect ? 1 : 0);
+    const nextIndex = i + 1;
 
-      if (passed && canEarnMoreToday) {
-        addEarnedMinutes(settings.rewardMinutes);
-        setShowResult(
-          `Passed with ${pct}% ✅ Earned ${settings.rewardMinutes} minutes (today: ${Math.min(
-            settings.dailyMaxMinutes,
-            earnedMinutesToday + settings.rewardMinutes
-          )}/${settings.dailyMaxMinutes}).`
-        );
-        // Move to play screen with newly earned minutes
-        const totalEarned = Math.min(settings.dailyMaxMinutes, earnedMinutesToday + settings.rewardMinutes);
-        // For MVP, let kid "spend" only the newly earned block:
+    if (nextIndex >= qs.length) {
+      const pct = Math.round((nextCorrect / settings.questionsPerSession) * 100);
+      if (pct >= settings.passingPct) {
         setSecondsLeft(settings.rewardMinutes * 60);
-        setMode("play");
-      } else if (passed && !canEarnMoreToday) {
-        setShowResult(
-          `Passed with ${pct}% ✅ but you’ve hit today’s max of ${settings.dailyMaxMinutes} minutes.`
-        );
+        setMode("unlock");
+        setFeedback(null);
       } else {
-        setShowResult(
-          `Scored ${pct}%. Need ${settings.passingPct}% to unlock. New set generated.`
-        );
-        // Auto-generate a new set
-        const qs = generateMultiplicationQuestions(settings.questionsPerSession);
-        setQuestions(qs);
-        setIdx(0);
-        setCorrectCount(0);
-        setDone(false);
+        setFeedback(`You scored ${pct}%. You need ${settings.passingPct}% to unlock. Try a new set.`);
+        // reset with a new set immediately
+        setCorrect(0);
+        setI(0);
+        setVal("");
+        setQs(makeQuestions(settings.questionsPerSession));
       }
       return;
     }
-    setIdx(next);
+
+    setCorrect(nextCorrect);
+    setI(nextIndex);
+    setVal("");
   }
 
-  // Play timer ticking
+  // timer tick
   useEffect(() => {
-    if (mode !== "play") return;
+    if (mode !== "unlock") return;
     if (secondsLeft <= 0) return;
-
-    const t = setInterval(() => {
-      setSecondsLeft((s) => Math.max(0, s - 1));
-    }, 1000);
-
+    const t = setInterval(() => setSecondsLeft((s) => Math.max(0, s - 1)), 1000);
     return () => clearInterval(t);
   }, [mode, secondsLeft]);
 
@@ -192,241 +100,202 @@ export default function Page() {
   const ss = String(secondsLeft % 60).padStart(2, "0");
 
   return (
-    <div style={styles.page}>
-      <div style={styles.card}>
-        <div style={styles.header}>
+    <div style={S.page}>
+      <div style={S.shell}>
+        <header style={S.header}>
           <div>
-            <div style={styles.title}>LevelED Up</div>
-            <div style={styles.subtitle}>Earn game time by leveling up your skills.</div>
+            <div style={S.brand}>LevelED Up</div>
+            <div style={S.tag}>Earn play time by leveling up your skills.</div>
           </div>
-          <div style={styles.badge}>
-            Today earned: <b>{earnedMinutesToday}</b> / {settings.dailyMaxMinutes} min
-          </div>
-        </div>
+          <div style={S.pill}>{modeLabel(mode)}</div>
+        </header>
 
         {mode === "home" && (
-          <div style={styles.section}>
-            <button style={styles.primary} onClick={() => setMode("parent")}>
-              Parent Settings
-            </button>
-            <button style={styles.secondary} onClick={startKidSession}>
-              Kid: Start Challenge
-            </button>
+          <section style={S.card}>
+            <h2 style={S.h2}>Welcome</h2>
+            <p style={S.p}>Choose Parent Settings or start a Kid Challenge.</p>
 
-            <div style={styles.note}>
-              MVP notes: this version unlocks an in-app “play timer.” Once validated, we add real device/app gating.
+            <div style={S.row}>
+              <button style={S.primary} onClick={() => setMode("parent")}>Parent Settings</button>
+              <button style={S.secondary} onClick={startQuiz}>Kid: Start Challenge</button>
             </div>
-          </div>
+
+            <div style={S.note}>
+              MVP note: this version “unlocks” an in-app play timer. Later we can add real app/device controls.
+            </div>
+          </section>
         )}
 
         {mode === "parent" && (
-          <div style={styles.section}>
-            <h2 style={styles.h2}>Parent Settings</h2>
+          <section style={S.card}>
+            <h2 style={S.h2}>Parent Settings</h2>
 
-            <label style={styles.label}>
-              Passing percentage ({settings.passingPct}%)
-              <input
-                style={styles.input}
-                type="number"
-                min={50}
-                max={100}
-                value={settings.passingPct}
-                onChange={(e) => setSettings({ passingPct: clampNum(e.target.value, 50, 100) })}
-              />
-            </label>
-
-            <label style={styles.label}>
-              Questions per session ({settings.questionsPerSession})
-              <input
-                style={styles.input}
-                type="number"
-                min={5}
-                max={30}
-                value={settings.questionsPerSession}
-                onChange={(e) =>
-                  setSettings({ questionsPerSession: clampNum(e.target.value, 5, 30) })
-                }
-              />
-            </label>
-
-            <label style={styles.label}>
-              Reward minutes per pass ({settings.rewardMinutes})
-              <input
-                style={styles.input}
-                type="number"
-                min={5}
-                max={60}
-                value={settings.rewardMinutes}
-                onChange={(e) => setSettings({ rewardMinutes: clampNum(e.target.value, 5, 60) })}
-              />
-            </label>
-
-            <label style={styles.label}>
-              Daily max minutes ({settings.dailyMaxMinutes})
-              <input
-                style={styles.input}
-                type="number"
-                min={10}
-                max={240}
-                value={settings.dailyMaxMinutes}
-                onChange={(e) =>
-                  setSettings({ dailyMaxMinutes: clampNum(e.target.value, 10, 240) })
-                }
-              />
-            </label>
-
-            <div style={styles.row}>
-              <button style={styles.secondary} onClick={() => setMode("home")}>
-                Back
-              </button>
-              <button style={styles.primary} onClick={startKidSession}>
-                Start Kid Challenge
-              </button>
-            </div>
-          </div>
-        )}
-
-        {mode === "kid" && (
-          <div style={styles.section}>
-            <h2 style={styles.h2}>Multiplication Challenge</h2>
-
-            {showResult && <div style={styles.alert}>{showResult}</div>}
-
-            <div style={styles.progress}>
-              Question <b>{idx + 1}</b> / {settings.questionsPerSession}
-            </div>
-
-            {questions[idx] && (
-              <div style={styles.quizBox}>
-                <div style={styles.problem}>
-                  {questions[idx].a} × {questions[idx].b} =
-                </div>
+            <div style={S.grid}>
+              <label style={S.label}>
+                Passing %
                 <input
-                  style={styles.bigInput}
-                  inputMode="numeric"
-                  value={input}
-                  onChange={(e) => setInput(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") submitAnswer();
-                  }}
-                  autoFocus
+                  style={S.input}
+                  type="number"
+                  min={50}
+                  max={100}
+                  value={settings.passingPct}
+                  onChange={(e) => setSettings({ ...settings, passingPct: clamp(e.target.value, 50, 100) })}
                 />
-                <button
-                  style={styles.primary}
-                  onClick={submitAnswer}
-                  disabled={input.trim().length === 0}
-                >
-                  Submit
-                </button>
+              </label>
+
+              <label style={S.label}>
+                Questions per session
+                <input
+                  style={S.input}
+                  type="number"
+                  min={5}
+                  max={30}
+                  value={settings.questionsPerSession}
+                  onChange={(e) => setSettings({ ...settings, questionsPerSession: clamp(e.target.value, 5, 30) })}
+                />
+              </label>
+
+              <label style={S.label}>
+                Reward minutes
+                <input
+                  style={S.input}
+                  type="number"
+                  min={1}
+                  max={60}
+                  value={settings.rewardMinutes}
+                  onChange={(e) => setSettings({ ...settings, rewardMinutes: clamp(e.target.value, 1, 60) })}
+                />
+              </label>
+            </div>
+
+            <div style={S.row}>
+              <button style={S.secondary} onClick={() => setMode("home")}>Back</button>
+              <button style={S.primary} onClick={startQuiz}>Start Challenge</button>
+            </div>
+          </section>
+        )}
+
+        {mode === "quiz" && (
+          <section style={S.card}>
+            <div style={S.topRow}>
+              <h2 style={S.h2}>Multiplication Challenge</h2>
+              <button style={S.link} onClick={() => setMode("home")}>Exit</button>
+            </div>
+
+            <div style={S.barOuter} aria-label="Progress">
+              <div style={{ ...S.barInner, width: `${progress}%` }} />
+            </div>
+
+            <div style={S.meta}>
+              <span>Question <b>{i + 1}</b> / {settings.questionsPerSession}</span>
+              <span>Score: <b>{scorePct}%</b></span>
+            </div>
+
+            {feedback && <div style={S.alert}>{feedback}</div>}
+
+            <div style={S.problemBox}>
+              <div style={S.problem}>
+                {qs[i]?.a} × {qs[i]?.b} =
               </div>
-            )}
 
-            <div style={styles.row}>
-              <button style={styles.secondary} onClick={() => setMode("home")}>
-                Exit
+              <input
+                style={S.bigInput}
+                inputMode="numeric"
+                value={val}
+                onChange={(e) => setVal(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && val.trim() && submit()}
+                autoFocus
+                placeholder="Type answer"
+              />
+
+              <button style={S.primary} onClick={submit} disabled={!val.trim()}>
+                Submit
               </button>
             </div>
-          </div>
+          </section>
         )}
 
-        {mode === "play" && (
-          <div style={styles.section}>
-            <h2 style={styles.h2}>Unlocked ✅</h2>
-            <div style={styles.playTimer}>
-              Play time remaining: <span style={styles.timer}>{mm}:{ss}</span>
-            </div>
+        {mode === "unlock" && (
+          <section style={S.card}>
+            <h2 style={S.h2}>Unlocked ✅</h2>
+            <p style={S.p}>Play time remaining</p>
 
-            <div style={styles.note}>
-              For the MVP, this is where the kid would go play. In later versions, this timer can control
-              real app access on mobile.
-            </div>
+            <div style={S.timer}>{mm}:{ss}</div>
 
-            <div style={styles.row}>
-              <button style={styles.secondary} onClick={() => setMode("home")}>
-                End Session
-              </button>
-              <button
-                style={styles.primary}
-                onClick={() => startKidSession()}
-                disabled={!canEarnMoreToday}
-                title={!canEarnMoreToday ? "Daily max reached" : ""}
-              >
-                Earn More Time
-              </button>
+            <div style={S.row}>
+              <button style={S.secondary} onClick={() => setMode("home")}>End Session</button>
+              <button style={S.primary} onClick={startQuiz}>Earn More</button>
             </div>
-          </div>
+          </section>
         )}
+
+        <footer style={S.footer}>
+          <span style={{ opacity: 0.75 }}>v0.1 • Design pass</span>
+        </footer>
       </div>
     </div>
   );
 }
 
-function clampNum(val: string, min: number, max: number) {
-  const n = Number(val);
+function clamp(v: string, min: number, max: number) {
+  const n = Number(v);
   if (!Number.isFinite(n)) return min;
   return Math.max(min, Math.min(max, Math.round(n)));
 }
+function modeLabel(m: Mode) {
+  if (m === "home") return "Home";
+  if (m === "parent") return "Parent";
+  if (m === "quiz") return "Kid Challenge";
+  return "Unlocked";
+}
 
-const styles: Record<string, React.CSSProperties> = {
+const S: Record<string, React.CSSProperties> = {
   page: {
     minHeight: "100vh",
+    background: "#0b1020",
     display: "flex",
     alignItems: "center",
     justifyContent: "center",
-    padding: 24,
-    background: "#0b1020",
+    padding: 20,
     color: "white",
     fontFamily:
       'ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji"',
   },
+  shell: { width: "100%", maxWidth: 760 },
+  header: {
+    display: "flex",
+    justifyContent: "space-between",
+    gap: 12,
+    alignItems: "flex-start",
+    marginBottom: 14,
+  },
+  brand: { fontSize: 30, fontWeight: 900, letterSpacing: 0.2 },
+  tag: { opacity: 0.8, marginTop: 4 },
+  pill: {
+    border: "1px solid rgba(255,255,255,0.16)",
+    background: "rgba(255,255,255,0.08)",
+    padding: "8px 10px",
+    borderRadius: 999,
+    fontSize: 13,
+    whiteSpace: "nowrap",
+  },
   card: {
-    width: "100%",
-    maxWidth: 720,
     background: "rgba(255,255,255,0.06)",
     border: "1px solid rgba(255,255,255,0.12)",
     borderRadius: 18,
     padding: 18,
     boxShadow: "0 20px 60px rgba(0,0,0,0.35)",
   },
-  header: {
-    display: "flex",
-    justifyContent: "space-between",
-    gap: 12,
-    alignItems: "flex-start",
-    marginBottom: 16,
-  },
-  title: { fontSize: 28, fontWeight: 800, letterSpacing: 0.2 },
-  subtitle: { opacity: 0.85, marginTop: 4 },
-  badge: {
-    background: "rgba(255,255,255,0.10)",
-    border: "1px solid rgba(255,255,255,0.12)",
-    padding: "10px 12px",
-    borderRadius: 12,
-    fontSize: 14,
-    whiteSpace: "nowrap",
-  },
-  section: { padding: 12 },
-  h2: { fontSize: 20, margin: "4px 0 12px" },
-  row: { display: "flex", gap: 10, marginTop: 14, flexWrap: "wrap" },
-  label: { display: "block", marginBottom: 12, opacity: 0.95 },
-  input: {
-    display: "block",
-    width: "100%",
-    marginTop: 6,
-    padding: 10,
-    borderRadius: 12,
-    border: "1px solid rgba(255,255,255,0.18)",
-    background: "rgba(0,0,0,0.25)",
-    color: "white",
-    outline: "none",
-  },
+  h2: { margin: 0, fontSize: 20, fontWeight: 800 },
+  p: { marginTop: 10, opacity: 0.88, lineHeight: 1.45 },
+  row: { display: "flex", gap: 10, flexWrap: "wrap", marginTop: 14 },
   primary: {
     padding: "12px 14px",
     borderRadius: 14,
     border: "1px solid rgba(255,255,255,0.18)",
     background: "white",
     color: "#0b1020",
-    fontWeight: 800,
+    fontWeight: 900,
     cursor: "pointer",
   },
   secondary: {
@@ -435,28 +304,51 @@ const styles: Record<string, React.CSSProperties> = {
     border: "1px solid rgba(255,255,255,0.18)",
     background: "rgba(255,255,255,0.10)",
     color: "white",
-    fontWeight: 700,
+    fontWeight: 800,
     cursor: "pointer",
   },
-  note: {
-    marginTop: 14,
-    opacity: 0.85,
-    fontSize: 14,
-    lineHeight: 1.4,
+  link: {
+    background: "transparent",
+    border: "none",
+    color: "rgba(255,255,255,0.85)",
+    cursor: "pointer",
+    fontWeight: 700,
   },
-  alert: {
-    background: "rgba(0, 255, 160, 0.10)",
-    border: "1px solid rgba(0, 255, 160, 0.25)",
+  note: { marginTop: 14, fontSize: 13, opacity: 0.75, lineHeight: 1.4 },
+  grid: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginTop: 14 },
+  label: { display: "grid", gap: 6, fontSize: 13, opacity: 0.95 },
+  input: {
     padding: 10,
     borderRadius: 12,
-    marginBottom: 12,
+    border: "1px solid rgba(255,255,255,0.18)",
+    background: "rgba(0,0,0,0.25)",
+    color: "white",
+    outline: "none",
   },
-  progress: { opacity: 0.9, marginBottom: 10 },
-  quizBox: {
-    background: "rgba(255,255,255,0.06)",
+  topRow: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 },
+  barOuter: {
+    height: 10,
+    borderRadius: 999,
+    background: "rgba(255,255,255,0.10)",
     border: "1px solid rgba(255,255,255,0.12)",
-    borderRadius: 16,
+    overflow: "hidden",
+    marginTop: 14,
+  },
+  barInner: { height: "100%", borderRadius: 999, background: "rgba(255,255,255,0.85)" },
+  meta: { display: "flex", justifyContent: "space-between", marginTop: 10, opacity: 0.85, fontSize: 13 },
+  alert: {
+    marginTop: 12,
+    padding: 10,
+    borderRadius: 12,
+    border: "1px solid rgba(255, 90, 90, 0.35)",
+    background: "rgba(255, 90, 90, 0.12)",
+  },
+  problemBox: {
+    marginTop: 14,
     padding: 14,
+    borderRadius: 16,
+    border: "1px solid rgba(255,255,255,0.12)",
+    background: "rgba(255,255,255,0.06)",
     display: "grid",
     gap: 10,
   },
@@ -467,9 +359,10 @@ const styles: Record<string, React.CSSProperties> = {
     border: "1px solid rgba(255,255,255,0.18)",
     background: "rgba(0,0,0,0.25)",
     color: "white",
-    fontSize: 22,
+    fontSize: 20,
     outline: "none",
     width: "100%",
   },
-  playTimer: { fontSize: 18, marginTop: 6 },
-  timer: { fontSize: 28, fontWeight: 900 },
+  timer: { fontSize: 42, fontWeight: 950, letterSpacing: 1, marginTop: 6 },
+  footer: { marginTop: 10, textAlign: "center", fontSize: 12 },
+};
